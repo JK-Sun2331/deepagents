@@ -13,7 +13,7 @@ from typing_extensions import Annotated, Literal
 tavily_client = TavilyClient()
 
 
-def fetch_webpage_content(url: str, timeout: float = 10.0) -> str:
+def fetch_webpage_content(url: str, timeout: float = 30.0) -> str:  #default = 10.0
     """Fetch and convert webpage content to markdown.
 
     Args:
@@ -28,7 +28,12 @@ def fetch_webpage_content(url: str, timeout: float = 10.0) -> str:
     }
 
     try:
-        response = httpx.get(url, headers=headers, timeout=timeout)
+        response = httpx.get(url,
+                             headers=headers,
+                             timeout=timeout,
+                             follow_redirects=True,
+                             )
+        
         response.raise_for_status()
         return markdownify(response.text)
     except Exception as e:
