@@ -1,8 +1,15 @@
-"""Research Tools.
+"""Research tools.
 
-This module provides search and content processing utilities for the research agent,
-using Tavily for URL discovery and fetching full webpage content.
+Tavily is used for URL discovery. Candidate pages are then validated and
+downloaded locally with HTTPX.
 """
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from threading import Lock
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from langchain_core.tools import InjectedToolArg, tool
@@ -10,87 +17,322 @@ from markdownify import markdownify
 from tavily import TavilyClient
 from typing_extensions import Annotated, Literal
 
+
 tavily_client = TavilyClient()
 
+# One page should not consume most of the model context.
+MAX_CONTENT_CHARS = 16_000
 
-def fetch_webpage_content(url: str, timeout: float = 30.0) -> str:  #default = 10.0
-    """Fetch and convert webpage content to markdown.
+# Stop after obtaining this many readable sources from one search.
+MAX_SUCCESSFUL_SOURCES = 2
 
-    Args:
-        url: URL to fetch
-        timeout: Request timeout in seconds
+# Do not repeatedly wait for the same failed URL within nearby runs.
+FAILED_URL_TTL_SECONDS = 600.0
 
-    Returns:
-        Webpage content as markdown
-    """
+# Known obsolete deployment domains. Do not spend timeout budget on them.
+BLOCKED_LEGACY_HOSTS = {
+    "sgl-project-sglang-93.mintlify.app",
+}
+
+_failed_urls: dict[str, float] = {}
+_failed_urls_lock = Lock()
+
+
+@dataclass(frozen=True)
+class FetchResult:
+    """Result of validating and downloading one webpage."""
+
+    requested_url: str
+    final_url: str | None
+    content: str | None
+    error: str | None
+
+
+def _canonicalize_url(url: str) -> str:
+    """Normalize a URL for deduplication and failure caching."""
+    parts = urlsplit(url.strip())
+
+    scheme = parts.scheme.lower()
+    hostname = (parts.hostname or "").lower()
+
+    if parts.port:
+        netloc = f"{hostname}:{parts.port}"
+    else:
+        netloc = hostname
+
+    path = parts.path or "/"
+
+    # Fragments do not change the downloaded document.
+    return urlunsplit((scheme, netloc, path, parts.query, ""))
+
+
+def _hostname(url: str) -> str:
+    return (urlsplit(url).hostname or "").lower()
+
+
+def _source_priority(url: str) -> int:
+    """Prefer likely primary-source domains over blogs."""
+    host = _hostname(url)
+
+    if (
+        host == "arxiv.org"
+        or host.endswith(".gov")
+        or host.endswith(".edu")
+        or host.startswith("docs.")
+        or host == "github.com"
+    ):
+        return 0
+
+    if host.endswith("readthedocs.io"):
+        return 1
+
+    return 2
+
+
+def _recently_failed(url: str) -> bool:
+    """Return True when this URL failed during the recent TTL window."""
+    now = time.monotonic()
+
+    with _failed_urls_lock:
+        expired = [
+            failed_url
+            for failed_url, failed_at in _failed_urls.items()
+            if now - failed_at >= FAILED_URL_TTL_SECONDS
+        ]
+
+        for failed_url in expired:
+            del _failed_urls[failed_url]
+
+        return url in _failed_urls
+
+
+def _remember_failure(url: str) -> None:
+    with _failed_urls_lock:
+        _failed_urls[url] = time.monotonic()
+
+
+def fetch_webpage_content(
+    url: str,
+    timeout: float = 15.0,
+) -> FetchResult:
+    """Fetch one webpage, following redirects and limiting content size."""
+    requested_url = _canonicalize_url(url)
+
+    if urlsplit(requested_url).scheme not in {"http", "https"}:
+        return FetchResult(
+            requested_url=requested_url,
+            final_url=None,
+            content=None,
+            error="Unsupported URL scheme",
+        )
+
+    host = _hostname(requested_url)
+
+    if host in BLOCKED_LEGACY_HOSTS:
+        return FetchResult(
+            requested_url=requested_url,
+            final_url=None,
+            content=None,
+            error=f"Skipped known legacy host: {host}",
+        )
+
+    if _recently_failed(requested_url):
+        return FetchResult(
+            requested_url=requested_url,
+            final_url=None,
+            content=None,
+            error="Skipped because this URL failed recently",
+        )
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
     }
 
     try:
-        response = httpx.get(url,
-                             headers=headers,
-                             timeout=timeout,
-                             follow_redirects=True,
-                             )
-        
+        response = httpx.get(
+            requested_url,
+            headers=headers,
+            follow_redirects=True,
+            timeout=httpx.Timeout(timeout, connect=5.0),
+        )
         response.raise_for_status()
-        return markdownify(response.text)
-    except Exception as e:
-        return f"Error fetching content from {url}: {str(e)}"
+
+        final_url = _canonicalize_url(str(response.url))
+        content_type = response.headers.get("content-type", "").lower()
+
+        supported_content = (
+            content_type.startswith("text/")
+            or "application/xhtml+xml" in content_type
+            or "application/json" in content_type
+        )
+
+        if not supported_content:
+            error = f"Unsupported content type: {content_type or 'unknown'}"
+            _remember_failure(requested_url)
+            return FetchResult(
+                requested_url=requested_url,
+                final_url=final_url,
+                content=None,
+                error=error,
+            )
+
+        if "html" in content_type:
+            content = markdownify(response.text)
+        else:
+            content = response.text
+
+        content = content.strip()
+
+        if not content:
+            _remember_failure(requested_url)
+            return FetchResult(
+                requested_url=requested_url,
+                final_url=final_url,
+                content=None,
+                error="Downloaded page was empty",
+            )
+
+        if len(content) > MAX_CONTENT_CHARS:
+            content = (
+                content[:MAX_CONTENT_CHARS]
+                + "\n\n[Content truncated by the research tool]"
+            )
+
+        return FetchResult(
+            requested_url=requested_url,
+            final_url=final_url,
+            content=content,
+            error=None,
+        )
+
+    except Exception as exc:
+        _remember_failure(requested_url)
+
+        return FetchResult(
+            requested_url=requested_url,
+            final_url=None,
+            content=None,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
 
 @tool(parse_docstring=True)
 def tavily_search(
     query: str,
-    max_results: Annotated[int, InjectedToolArg] = 1,
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+    max_results: Annotated[int, InjectedToolArg] = 5,
     topic: Annotated[
-        Literal["general", "news", "finance"], InjectedToolArg
+        Literal["general", "news", "finance"],
+        InjectedToolArg,
     ] = "general",
 ) -> str:
-    """Search the web for information on a given query.
+    """Search for live webpages and return readable source content.
 
-    Uses Tavily to discover relevant URLs, then fetches and returns full webpage content as markdown.
+    Use include_domains when the user requests primary or official sources.
+    Failed and duplicate URLs are skipped, and another candidate is tried.
 
     Args:
-        query: Search query to execute
-        max_results: Maximum number of results to return (default: 1)
-        topic: Topic filter - 'general', 'news', or 'finance' (default: 'general')
+        query: Search query to execute.
+        include_domains: Trusted domains to prioritize or restrict results to.
+        exclude_domains: Domains that must not appear in the results.
+        max_results: Maximum candidate URLs requested from Tavily.
+        topic: Tavily topic filter.
 
     Returns:
-        Formatted search results with full webpage content
+        Readable content from successful sources plus a concise failure summary.
     """
-    # Use Tavily to discover URLs
-    search_results = tavily_client.search(
-        query,
-        max_results=max_results,
-        topic=topic,
+    search_kwargs: dict[str, object] = {
+        "query": query,
+        "max_results": max_results,
+        "topic": topic,
+    }
+
+    if include_domains:
+        search_kwargs["include_domains"] = include_domains
+
+    if exclude_domains:
+        search_kwargs["exclude_domains"] = exclude_domains
+
+    search_results = tavily_client.search(**search_kwargs)
+    candidates = search_results.get("results", [])
+
+    # Preserve Tavily relevance within each source-priority tier.
+    candidates = sorted(
+        enumerate(candidates),
+        key=lambda item: (
+            _source_priority(item[1].get("url", "")),
+            item[0],
+        ),
     )
 
-    # Fetch full content for each URL
-    result_texts = []
-    for result in search_results.get("results", []):
-        url = result["url"]
-        title = result["title"]
+    successful_results: list[str] = []
+    failures: list[str] = []
+    seen_urls: set[str] = set()
 
-        # Fetch webpage content
-        content = fetch_webpage_content(url)
+    for _, result in candidates:
+        if len(successful_results) >= MAX_SUCCESSFUL_SOURCES:
+            break
 
-        result_text = f"""## {title}
-**URL:** {url}
+        raw_url = result.get("url", "")
+        title = result.get("title", "Untitled source")
+        url = _canonicalize_url(raw_url)
 
-{content}
+        if not url or url in seen_urls:
+            continue
 
----
-"""
-        result_texts.append(result_text)
+        seen_urls.add(url)
+        fetched = fetch_webpage_content(url)
 
-    # Format final response
-    response = f"""🔍 Found {len(result_texts)} result(s) for '{query}':
+        if fetched.error is not None:
+            failures.append(f"- {url}: {fetched.error}")
+            continue
 
-{chr(10).join(result_texts)}"""
+        final_url = fetched.final_url or url
 
-    return response
+        successful_results.append(
+            "\n".join(
+                [
+                    f"## {title}",
+                    f"**URL:** {final_url}",
+                    "",
+                    fetched.content or "",
+                    "",
+                    "---",
+                ]
+            )
+        )
+
+    sections = [
+        (
+            f"Search query: {query}\n"
+            f"Candidates returned: {len(candidates)}\n"
+            f"Readable sources: {len(successful_results)}"
+        )
+    ]
+
+    if successful_results:
+        sections.append("\n\n".join(successful_results))
+    else:
+        sections.append(
+            "No candidate page could be downloaded. "
+            "Do not infer factual claims from this search."
+        )
+
+    if failures:
+        sections.append(
+            "Skipped or failed candidates:\n"
+            + "\n".join(failures[:5])
+        )
+
+    return "\n\n".join(sections)
+
+
 
 
 @tool(parse_docstring=True)

@@ -89,6 +89,22 @@ Think like a human researcher with limited time. Follow these steps:
 5. **Stop when you can answer confidently** - Don't keep searching for perfection
 </Instructions>
 
+<Source Quality Rules>
+1. If the user requests primary sources, prioritize official documentation,
+   official repositories, and original research papers.
+2. Blogs, aggregators, and third-party tutorials are not primary sources.
+3. Before searching, identify likely official domains and pass them through
+   include_domains when possible.
+4. Do not retry a URL that has already failed during the current research task.
+5. If the same unavailable URL appears again, change the domain, query wording,
+   or source category instead of requesting it again.
+6. If authoritative sources cannot be retrieved, clearly report the limitation
+   instead of inferring unsupported technical details.
+7. Do not call think_tool in the same model response as tavily_search.
+   Wait for the search result, then call think_tool in the next step.
+8. Every major technical claim must be traceable to a successfully retrieved source.
+</Source Quality Rules>
+
 <Hard Limits>
 **Tool Call Budgets** (Prevent excessive searching):
 - **Simple queries**: Use 2-3 search tool calls maximum
