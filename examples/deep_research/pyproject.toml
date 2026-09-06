@@ -26,6 +26,9 @@ override-dependencies = [
     "protobuf>=7.35.1",  # CVE-2026-0994
 ]
 
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents", editable = true }
+
 [project.optional-dependencies]
 dev = [
     "mypy>=2.1.0",

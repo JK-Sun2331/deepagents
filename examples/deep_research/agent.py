@@ -4,10 +4,19 @@ This module creates a deep research agent with custom tools and prompts
 for conducting web research with strategic thinking and context management.
 """
 
+import os
+
+from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+
+load_dotenv()
+
+from research_agent.tools import tavily_search, think_tool
+
 from datetime import datetime
 
-from langchain.chat_models import init_chat_model
-from langchain_google_genai import ChatGoogleGenerativeAI
+#from langchain.chat_models import init_chat_model
+#from langchain_google_genai import ChatGoogleGenerativeAI
 from deepagents import create_deep_agent
 
 from research_agent.prompts import (
@@ -15,11 +24,12 @@ from research_agent.prompts import (
     RESEARCH_WORKFLOW_INSTRUCTIONS,
     SUBAGENT_DELEGATION_INSTRUCTIONS,
 )
-from research_agent.tools import tavily_search, think_tool
 
 # Limits
-max_concurrent_research_units = 3
-max_researcher_iterations = 3
+max_concurrent_research_units = int(
+    os.environ.get("MAX_CONCURRENT_RESEARCH_UNITS", "3")
+)
+max_researcher_iterations = int(os.environ.get("MAX_RESEARCHER_ITERATIONS", "3"))
 
 # Get current date
 current_date = datetime.now().strftime("%Y-%m-%d")
@@ -48,7 +58,20 @@ research_sub_agent = {
 # model = ChatGoogleGenerativeAI(model="gemini-3-pro-preview", temperature=0.0)
 
 # Model Claude 4.5
-model = init_chat_model(model="anthropic:claude-sonnet-4-5-20250929", temperature=0.0)
+#model = init_chat_model(model="anthropic:claude-sonnet-4-5-20250929", temperature=0.0)
+
+model = ChatOpenAI(
+    model=os.environ.get("LOCAL_LLM_MODEL", "qwen2.5-14b-instruct"),
+    base_url=os.environ.get(
+        "LOCAL_LLM_BASE_URL",
+        "http://127.0.0.1:8000/v1",
+    ),
+    api_key=os.environ.get("LOCAL_LLM_API_KEY", "EMPTY"),
+    temperature=0.0,
+    max_tokens=8192,
+    timeout=180,
+    max_retries=2,
+)
 
 # Create the agent
 agent = create_deep_agent(

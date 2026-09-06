@@ -181,6 +181,9 @@ Your role is to coordinate research by delegating tasks from your TODO list to s
 ## Parallel Execution Limits
 - Use at most {max_concurrent_research_units} parallel sub-agents per iteration
 - Make multiple task() calls in a single response to enable parallel execution
+- Emit each task() invocation as a separate tool call with exactly one valid JSON arguments object
+- Never concatenate multiple JSON objects or place multiple tasks inside one tool call
+- Use the native tool-calling interface; do not write raw <tool_call> markup in text
 - Each sub-agent returns findings independently
 
 ## Research Limits
