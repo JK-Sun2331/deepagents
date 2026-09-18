@@ -20,6 +20,7 @@ from agent import (
     current_date,
     max_concurrent_research_units,
     max_researcher_iterations,
+    summarization_trigger_tokens,
 )
 from agent import agent as research_agent
 from research_agent.profiling import ProfileRecorder
@@ -82,6 +83,9 @@ def _environment() -> dict[str, str | bool | None]:
         "SLACKKV_SERVICE_GPU_MEMORY_UTILIZATION": os.getenv(
             "SLACKKV_SERVICE_GPU_MEMORY_UTILIZATION"
         ),
+        "SLACKKV_SERVICE_TENSOR_PARALLEL_SIZE": os.getenv(
+            "SLACKKV_SERVICE_TENSOR_PARALLEL_SIZE"
+        ),
         "LANGSMITH_TRACING": os.getenv("LANGSMITH_TRACING", "").lower()
         in {"1", "true", "yes"},
     }
@@ -108,7 +112,10 @@ def _metadata(query: str, output_dir: Path, workflow_id: str) -> dict[str, objec
             "max_content_chars": MAX_CONTENT_CHARS,
             "max_successful_sources": MAX_SUCCESSFUL_SOURCES,
             "model_temperature": 0.0,
-            "model_max_tokens": 8192,
+            "model_max_tokens": 4096,
+            "model_enable_thinking": False,
+            "summarization_trigger_tokens": summarization_trigger_tokens,
+            "summarization_keep_messages": 6,
             "model_timeout_seconds": 180,
             "model_max_retries": 2,
         },
