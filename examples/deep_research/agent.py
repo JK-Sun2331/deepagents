@@ -25,7 +25,10 @@ from research_agent.prompts import (
     RESEARCHER_INSTRUCTIONS,
     RESEARCH_WORKFLOW_INSTRUCTIONS,
     SUBAGENT_DELEGATION_INSTRUCTIONS,
+    SUMMARY_GENERATION_INSTRUCTIONS,
+    SUMMARY_RESEARCH_INSTRUCTIONS,
 )
+from research_agent.summary import ResearchSummaryMiddleware
 
 # Limits
 max_concurrent_research_units = int(
@@ -92,7 +95,10 @@ def research_summarization():
     )
 
 
-research_sub_agent["middleware"] = [research_summarization()]
+research_sub_agent["middleware"] = [
+    research_summarization(),
+    ResearchSummaryMiddleware(model, SUMMARY_RESEARCH_INSTRUCTIONS, SUMMARY_GENERATION_INSTRUCTIONS),
+]
 
 # Named middleware replaces the built-in summarizer for both agent levels.
 agent = create_deep_agent(
