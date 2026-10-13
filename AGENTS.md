@@ -1,5 +1,11 @@
 # Global development guidelines for the Deep Agents monorepo
 
+## SlackKV fork 的当前任务
+
+本地研究开发遵循工作区的 [SlackKV 规则](../slackkv-control/AGENTS.md)和[当前概况](../slackkv-control/project-description/overview.md)。本地实验分支统一使用 `experiment/slackkv-two-batch`；下文分支命名与 PR 约定用于上游贡献。
+
+当前双 batch 核心开发在 vLLM fork，Deep Research 保持无预测、仅 research-agent、显式 summary 协议。S7 按实际调用链接入身份元数据和回放，summary 内目标模型调用仍进入待测服务。优先定位 `examples/deep_research/`，不提前改写 Agent 框架或研究提示；实验代码、运行数据与阶段报告集中在 control 的对应目录。
+
 This file contains repository-wide rules for agents and contributors. Use these sources for details instead of duplicating them here:
 
 - [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md) — repository layout, setup, commands, pre-commit, the edit-test-lint loop, testing, and benchmarks.
